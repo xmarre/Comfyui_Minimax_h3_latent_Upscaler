@@ -264,6 +264,11 @@ class VideoLatentResizer(nn.Module):
 # 模型加载 (适配训练权重)
 # ==========================================
 MODEL_CACHE = {}
+_PRECISION_DTYPES = {
+    "fp32": torch.float32,
+    "fp16": torch.float16,
+    "bf16": torch.bfloat16,
+}
 
 def get_models_dir():
     return folder_paths.get_folder_paths(_LATENT_UPSCALE_FOLDER)[0]
@@ -276,18 +281,30 @@ def scan_models():
     names = sorted(os.path.basename(f) for f in files)
     return names if names else [f"(请将模型放入: {model_dir})"]
 
-def _load_raw_sd(path):
+def _convert_state_tensor(tensor, dtype):
+    if torch.is_tensor(tensor) and tensor.is_floating_point() and tensor.dtype != dtype:
+        return tensor.to(dtype=dtype)
+    return tensor
+
+def _load_raw_sd(path, device, dtype):
     if path.endswith('.safetensors'):
-        from safetensors.torch import load_file
-        sd = load_file(path, device='cpu')
-    else:
-        sd = torch.load(path, map_location='cpu', weights_only=False)
+        from safetensors import safe_open
+        with safe_open(path, framework='pt', device=str(device)) as f:
+            keys = list(f.keys())
+            has_prefix = any(k.startswith("upscaler.") for k in keys)
+            sd = {}
+            for k in keys:
+                if has_prefix and not k.startswith("upscaler."):
+                    continue
+                out_key = k[len("upscaler."):] if has_prefix else k
+                sd[out_key] = _convert_state_tensor(f.get_tensor(k), dtype)
+        return sd
+
+    sd = torch.load(path, map_location=device, weights_only=False)
     if isinstance(sd, dict) and 'model' in sd:
         sd = sd['model']
-    # 转换 FP8 为 FP16 方便处理
-    sd = {k: v.to(torch.float16) if v.dtype == torch.float8_e4m3fn else v
-          for k, v in sd.items()}
-    return sd
+    sd = _extract_upscaler_sd(sd)
+    return {k: _convert_state_tensor(v, dtype) for k, v in sd.items()}
 
 def _extract_upscaler_sd(sd):
     # 兼容合并权重中的 upscaler. 前缀
@@ -364,41 +381,41 @@ def load_model(name, device, precision):
     if not os.path.exists(path):
         raise FileNotFoundError(f"模型文件不存在: {path}")
 
-    raw_sd = _load_raw_sd(path)
-    up_sd = _extract_upscaler_sd(raw_sd)
-
+    dtype = _PRECISION_DTYPES.get(precision, torch.float32)
+    up_sd = _load_raw_sd(path, device, dtype)
     cfg = _detect_arch(up_sd)
 
-    # 构建模型 (与训练完全一致)
-    model = VideoLatentResizer(
-        in_channels=cfg["in_channels"],
-        in_blocks=cfg["in_blocks"],
-        out_blocks=cfg["out_blocks"],
-        channels=cfg["channels"],
-        dropout=cfg["dropout"],
-        attn=cfg["attn"],                # 强制 False
-        temporal_every=cfg["temporal_every"],
-        temporal_kernel=cfg["temporal_kernel"],
-    )
+    # Meta construction avoids a second full FP32 CPU model before CUDA inference.
+    with torch.device("meta"):
+        model = VideoLatentResizer(
+            in_channels=cfg["in_channels"],
+            in_blocks=cfg["in_blocks"],
+            out_blocks=cfg["out_blocks"],
+            channels=cfg["channels"],
+            dropout=cfg["dropout"],
+            attn=cfg["attn"],                # 强制 False
+            temporal_every=cfg["temporal_every"],
+            temporal_kernel=cfg["temporal_kernel"],
+        )
 
-    # 加载权重，忽略不匹配的键 (如 attn 层若训练有但推理强制关闭)
-    missing, unexpected = model.load_state_dict(up_sd, strict=False)
-    if missing:
-        print(f"[MinimaxH3] 缺少键: {missing[:5]}... (可能由于 attn 强制关闭)")
-    if unexpected:
-        print(f"[MinimaxH3] 多余键: {unexpected[:5]}... (可能来自合并文件的其他部分)")
-
-    dtype = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}.get(precision, torch.float32)
-    model = model.to(device).eval()
-    if dtype != torch.float32:
-        model = model.to(dtype)
+    incompatible = model.load_state_dict(up_sd, strict=False, assign=True)
+    if incompatible.missing_keys:
+        raise RuntimeError(
+            "Upscaler checkpoint is missing required model weights: "
+            + ", ".join(incompatible.missing_keys[:8])
+        )
+    if incompatible.unexpected_keys:
+        print(f"[MinimaxH3] 多余键: {incompatible.unexpected_keys[:5]}... (可能来自被强制关闭的 attention 层)")
+    model.eval()
+    del up_sd
 
     MODEL_CACHE[cache_key] = model
 
     print(f"[MinimaxH3] 加载放大模型: {name}")
     print(f"  Params: {sum(p.numel() for p in model.parameters()):,} | "
           f"Attn: 强制关闭 | Temporal: {'✓' if cfg['temporal_every']>0 else '✗'} "
-          f"(every={cfg['temporal_every']}, kernel={cfg['temporal_kernel']})")
+          f"(every={cfg['temporal_every']}, kernel={cfg['temporal_kernel']}) | "
+          f"Device: {device} | DType: {dtype}")
     return model
 
 # ==========================================
@@ -435,33 +452,32 @@ class MinimaxH3LatentUpscalerNode2D:
         dev = torch.device(device if torch.cuda.is_available() else "cpu")
         model = load_model(model_name, dev, precision)
 
-        s = latent["samples"].clone()
-        orig_dtype = s.dtype
-        # 确保是 5D (B, C, T, H, W)
-        if len(s.shape) == 4:
-            s = s.unsqueeze(2)  # (B, C, 1, H, W)
+        samples = latent["samples"]
+        orig_dtype = samples.dtype
+        was_4d = len(samples.shape) == 4
+        s = samples.unsqueeze(2) if was_4d else samples
 
-        compute_dtype = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}[precision]
+        compute_dtype = _PRECISION_DTYPES[precision]
         s = s.to(dev, compute_dtype)
 
-        # 归一化
-        norm_mean, norm_std = _make_norm_tensors(dev, compute_dtype)
-        s = (s - norm_mean) / norm_std
+        with torch.inference_mode():
+            # 归一化
+            norm_mean, norm_std = _make_norm_tensors(dev, compute_dtype)
+            s = (s - norm_mean) / norm_std
 
-        with torch.no_grad():
             # 目标空间尺寸 (H, W)，时间维度不变
             T, H, W = s.shape[2], s.shape[3], s.shape[4]
             target_hw = (int(round(H * scale)), int(round(W * scale)))
             out = model(s, scale=scale, target_hw=target_hw)
 
-        # 反归一化
-        out = out * norm_std + norm_mean
+            # 反归一化
+            out = out * norm_std + norm_mean
 
-        # 还原维度
-        if len(latent["samples"].shape) == 4:
-            out = out.squeeze(2)
+            # 还原维度
+            if was_4d:
+                out = out.squeeze(2)
 
-        out = out.cpu().to(orig_dtype)
+            out = out.cpu().to(orig_dtype)
 
         if dev.type == "cuda":
             torch.cuda.empty_cache()
