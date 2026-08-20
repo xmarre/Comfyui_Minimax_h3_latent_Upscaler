@@ -23,4 +23,13 @@ try:
 except Exception as e:
     logging.error(f"[MinimaxH3] Failed to import 3D node: {e}")
 
+# H3-aware refinement is part of this package, so unexpected import or
+# initialization failures must propagate instead of silently hiding the node.
+from .minimax_h3_refine import (
+    NODE_CLASS_MAPPINGS as NODE_CLASS_MAPPINGS_REFINE,
+    NODE_DISPLAY_NAME_MAPPINGS as NODE_DISPLAY_NAME_MAPPINGS_REFINE,
+)
+NODE_CLASS_MAPPINGS.update(NODE_CLASS_MAPPINGS_REFINE)
+NODE_DISPLAY_NAME_MAPPINGS.update(NODE_DISPLAY_NAME_MAPPINGS_REFINE)
+
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
