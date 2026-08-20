@@ -32,4 +32,15 @@ from .minimax_h3_refine import (
 NODE_CLASS_MAPPINGS.update(NODE_CLASS_MAPPINGS_REFINE)
 NODE_DISPLAY_NAME_MAPPINGS.update(NODE_DISPLAY_NAME_MAPPINGS_REFINE)
 
+# Continuum list outputs must be consumed as one ordered sequence so sampler 2
+# can carry the actual post-refine tail of chunk N into chunk N+1's protected
+# Native-Masked prefix.  Register this wrapper last under the same stable node
+# key so existing workflows gain seam-safe behavior without node replacement.
+from .minimax_h3_refine_sequence import (
+    NODE_CLASS_MAPPINGS as NODE_CLASS_MAPPINGS_REFINE_SEQUENCE,
+    NODE_DISPLAY_NAME_MAPPINGS as NODE_DISPLAY_NAME_MAPPINGS_REFINE_SEQUENCE,
+)
+NODE_CLASS_MAPPINGS.update(NODE_CLASS_MAPPINGS_REFINE_SEQUENCE)
+NODE_DISPLAY_NAME_MAPPINGS.update(NODE_DISPLAY_NAME_MAPPINGS_REFINE_SEQUENCE)
+
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
