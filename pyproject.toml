@@ -1,0 +1,17 @@
+[project]
+name = "comfyui-minimax-h3-latent-upscaler"
+version = "0.1.0"
+description = "Learned MiniMax H3 latent upscaling with integrated low-sigma refinement for ComfyUI."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["einops"]
+
+[project.urls]
+Repository = "https://github.com/xmarre/Comfyui_Minimax_h3_latent_Upscaler"
+"Bug Tracker" = "https://github.com/xmarre/Comfyui_Minimax_h3_latent_Upscaler/issues"
+
+[tool.comfy]
+PublisherId = "xmarre"
+DisplayName = "ComfyUI Minimax H3 Latent Upscaler"
+Icon = ""
+includes = []
