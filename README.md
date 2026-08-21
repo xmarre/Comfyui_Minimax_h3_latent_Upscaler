@@ -14,6 +14,7 @@ Learned · High-fidelity · 2D & 3D Variants
 
 ## 📰 News
 
+- [2026-08-21] 🔧 **Selective LBH upstream sync**: fixed dual-axis output alignment while preserving aspect-ratio lock, added opt-in learned-model offload for standalone and integrated refinement workflows, and deliberately rejected non-equivalent temporal chunking / forced per-run offload. See [Upstream sync policy](#upstream-sync-policy).
 - [2026-08-20] 🧩 **Integrated MiniMax H3 refinement**: the H3-aware 3D node now performs the complete learned-upscale + low-sigma H3 sampling pass internally. H3 Continuum V3.4 interop uses exact per-chunk `refine_state` from the companion Continuum implementation; no external BasicGuider, DisableNoise, or SamplerCustomAdvanced is required.
 - [2026-08-19] 🚀 **3D node overhaul**: all three resize modes (`scale by multiplier`, `target dimensions`, `megapixels`) merged into a single node; fixed aspect-ratio mismatch in certain modes and edge artifacts at specific sizes.
 - [2026-08-18] 🔥 **Precision selector**: both 2D and 3D nodes support `fp32` / `fp16` / `bf16` inference.
@@ -64,8 +65,12 @@ Comfyui_Minimax_h3_latent_Upscaler/
 │   ├── minimax_h3_refine_support.py       # H3 AV/mask/conditioning helpers
 │   └── minimax_h3_refine.py               # complete H3 learned-upscale + refinement
 ├── tests/
+│   ├── conftest.py
+│   ├── test_h3_refine_node.py
+│   ├── test_h3_refine_sequence.py
 │   ├── test_h3_refine_support.py
-│   └── test_h3_refine_node.py
+│   ├── test_native_comfyui_fixture.py
+│   └── test_upstream_sync.py
 ├── README.md
 ├── README_zh.md
 └── __init__.py
@@ -84,11 +89,14 @@ The model weights are not included in this repository.
 - **Native AV handling**: only video is spatially upscaled; audio is preserved or deliberately refined.
 - **Exact target-conditioning geometry**: target `minimax_keyframes` follow H3's padded target grid while independent `minimax_refs` retain their own latent/RoPE grids.
 - **Native-Masked continuation safety**: exact per-chunk video/audio denoise masks are retained and the protected prefix is not accidentally re-denoised.
+- **Dual-axis output alignment**: 3D output dimensions use a common pixel grid compatible with both the requested `align` value and H3's 16× VAE grid.
+- **Aspect-ratio-aware sizing**: `keep_proportion=True` remains supported; the 3D node chooses a nearby valid aligned W/H pair rather than fixing alignment by independently distorting both axes.
 - **Memory-conscious checkpoint loading**: direct safetensors loading to the selected device/precision, meta-device construction, `load_state_dict(assign=True)`, reduced input cloning, and model caching.
+- **Optional learned-model offload**: `offload_after_upscale` can free the learned 3D upscaler after inference; it is deliberately **off by default** to avoid repeated CPU↔GPU transfers on high-VRAM/repeated workflows.
 - **Flexible output sizing**: multiplier, target dimensions, or megapixels on the 3D nodes.
 - **Flexible precision/device**: CUDA/CPU and fp32/fp16/bf16.
 
-Inference forces learned-upscaler attention off (`attn=False`) for speed/stability. Loaded learned models are cached by `(name, device, precision)`.
+Inference forces learned-upscaler attention off (`attn=False`) for speed/stability. Loaded learned models are cached by `(name, device, precision)`. If an optionally offloaded cached model is used again, it is moved back to the requested device before inference.
 
 ---
 
@@ -96,7 +104,7 @@ Inference forces learned-upscaler attention off (`attn=False`) for speed/stabili
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler.git
+git clone https://github.com/xmarre/Comfyui_Minimax_h3_latent_Upscaler.git
 ```
 
 A normal ComfyUI installation already provides the main runtime dependencies (`torch`, `einops`, `safetensors`). Restart ComfyUI after installing or updating the node.
@@ -129,6 +137,8 @@ MiniMax H3 latent
 
 This path does **not** run another H3 transformer pass.
 
+For the 3D node, enable `offload_after_upscale` only when reclaiming the learned upscaler's VRAM matters more than avoiding a later CPU→GPU reload. The default is `False`.
+
 ### Integrated native H3 refinement
 
 For a native joint H3 AV LATENT:
@@ -152,6 +162,8 @@ MiniMax H3 Latent Upscaler + Refine (3D)
 ```
 
 `negative` remains optional for deliberate CFG-style workflows on the explicit native fallback path. Native MiniMax H3 normally uses positive-only BasicGuider semantics; the integrated node constructs that guider internally when `negative` is not connected.
+
+On the integrated path, `offload_after_upscale=True` moves the cached learned 3D upscaler to CPU **after the learned upscale and before sampler 2**. This can reduce peak residency when sampler 2 needs the target-resolution H3 transformer, but it remains opt-in because repeated runs otherwise pay the model reload/transfer cost every time.
 
 ### H3 Continuum V3.4 refinement
 
@@ -206,12 +218,13 @@ For an exact refinement run use either:
 The integrated node follows ComfyUI's normal advanced-sampler contract:
 
 1. perform the learned video upscale;
-2. rebuild clean high-resolution joint H3 AV state;
-3. generate independent fresh noise directly on that enlarged AV grid;
-4. build the positive-only H3 guider for Continuum, or an optional CFG guider on the explicit native fallback when `negative` is connected;
-5. call the supplied ComfyUI `SAMPLER` with the clean latent, generated noise, supplied `SIGMAS`, and denoise mask;
-6. let ComfyUI perform the model's normal `model_sampling.noise_scaling(...)` internally;
-7. return the sampler result as the final LATENT.
+2. optionally offload the learned 3D upscaler when `offload_after_upscale=True`;
+3. rebuild clean high-resolution joint H3 AV state;
+4. generate independent fresh noise directly on that enlarged AV grid;
+5. build the positive-only H3 guider for Continuum, or an optional CFG guider on the explicit native fallback when `negative` is connected;
+6. call the supplied ComfyUI `SAMPLER` with the clean latent, generated noise, supplied `SIGMAS`, and denoise mask;
+7. let ComfyUI perform the model's normal `model_sampling.noise_scaling(...)` internally;
+8. return the sampler result as the final LATENT.
 
 There is **no manual pre-noising/inverse-noise handoff** and therefore no `DisableNoise` stage.
 
@@ -241,6 +254,18 @@ Audio never enters the learned spatial upscaler.
 - conditioning metadata is cloned rather than mutated;
 - list/tuple container type and additional entry fields are preserved.
 
+### 3D alignment semantics
+
+The `align` value is a **pixel-space** requirement. H3's VAE also requires a 16× pixel grid. The 3D node therefore uses the common grid:
+
+```text
+alignment_grid = lcm(align, 16)
+```
+
+For the default `align=32`, both output axes are therefore 32-pixel aligned. For a non-divisor such as `align=24`, both axes are aligned to 48 pixels so they satisfy both requirements.
+
+With `keep_proportion=False`, width and height are rounded independently on this common grid. With `keep_proportion=True`, the node searches nearby valid grid pairs and selects the result that best preserves the source aspect ratio while staying close to the requested target. It does **not** make one axis valid and leave the other axis only VAE-aligned, and it does not solve the problem by silently stretching the image.
+
 ---
 
 ## Node Reference — 2D
@@ -265,8 +290,9 @@ Output: final learned-upscaled `LATENT`.
 | `scale` | FLOAT | 2.0 | 1.0–4.0 in multiplier mode |
 | `width` / `height` | INT | 1280 / 704 | target pixel size |
 | `megapixels` | FLOAT | 1.0 | target megapixel budget |
-| `align` | INT | 32 | pixel-grid alignment |
-| `keep_proportion` | BOOLEAN | True | preserve aspect ratio where supported |
+| `align` | INT | 32 | requested pixel-grid alignment; combined with the 16× H3 VAE grid via `lcm(align, 16)` |
+| `keep_proportion` | BOOLEAN | True | preserve source aspect ratio while choosing a nearby valid dual-axis aligned size |
+| `offload_after_upscale` | BOOLEAN | False | move the cached learned 3D model to CPU after inference to reclaim VRAM; later reuse moves it back to the requested device |
 | `device` | dropdown | cuda | cuda / cpu |
 | `precision` | dropdown | fp16 | fp32 / fp16 / bf16 |
 
@@ -281,6 +307,7 @@ The integrated node includes the same learned 3D sizing/model/device/precision c
 | `noise` | NOISE | yes | fresh enlarged-grid refinement noise |
 | `sampler` | SAMPLER | yes | actual sampler executed internally |
 | `sigmas` | SIGMAS | yes | partial-denoise second-pass schedule |
+| `offload_after_upscale` | BOOLEAN | yes | defaults to `False`; when enabled, offloads the learned 3D model before sampler 2 |
 | `audio_latent` | LATENT | no* | matching audio stream for split H3/Continuum input |
 | `refine_state` | H3_CONTINUUM_REFINE_STATE | no** | preferred authoritative Continuum model + conditioning contract |
 | `model` | MODEL | no** | native/non-Continuum fallback MODEL; ignored when `refine_state` is connected |
@@ -302,14 +329,35 @@ The integrated node includes the same learned 3D sizing/model/device/precision c
 - **Latent format:** 24-channel MiniMax H3 video latent, normalized with the checkpoint's training channel statistics for learned inference.
 - **Default detected architecture:** `in_channels=24`, `in_blocks=12`, `out_blocks=12`, `base_channels=512`, `dropout=0.1`, `temporal_every=2`, `temporal_kernel=5`, `attn=False`.
 - **Interpolation:** 2D uses bilinear feature interpolation; 3D uses trilinear.
-- **Temporal handling:** learned variants preserve T and scale only H×W.
+- **Temporal handling:** learned variants preserve T and scale only H×W. The 3D path intentionally runs the complete temporal extent rather than silently splitting long sequences into independent chunks.
 - **H3 DiT grid:** H3 pads target video H/W to its 2×2 patch grid internally and crops back to the requested latent shape. The refinement node leaves the learned output shape unchanged and adjusts target keyframe conditioning instead of adding physical latent cells.
+
+### Upstream sync policy
+
+This fork tracks useful LBH upstream changes **selectively**, not by mechanically merging every upstream commit. A clean Git graph is not more important than preserving numerically sound behavior.
+
+The 2026-08-21 upstream changes were reviewed as follows:
+
+**Adopted, with redesign:**
+
+- **Dual-axis alignment fix.** The underlying upstream concern was valid: both output axes should satisfy the requested pixel alignment, not just one axis. This fork uses `lcm(align, 16)` so the user-requested grid and H3's 16× VAE grid are both satisfied.
+- **Model offload.** The useful low-VRAM behavior is available as `offload_after_upscale`, but it is opt-in and defaults to `False`. On the integrated node it happens between learned upscale and sampler 2, where freeing the learned model can be most useful.
+- **Cache rehoming.** If an optionally offloaded learned model is reused, the cached model is moved back to the requested device before inference.
+
+**Deliberately not adopted:**
+
+- **16-frame temporal chunking with only `temporal_kernel // 2` overlap.** This is not numerically equivalent to full-sequence execution. The 3D network contains repeated Conv3d/TemporalConv layers, and GroupNorm computes statistics across temporal/spatial dimensions. Splitting the sequence therefore changes normalization statistics and receptive context; merely overlapping two frames for a kernel-5 temporal convolution does not restore equivalence and can introduce chunk-boundary differences.
+- **Forced CPU offload after every run.** This needlessly adds CPU↔GPU transfer/reload latency for repeated runs and high-VRAM systems. Offload is explicit instead.
+- **Replacing private-copy in-place normalization/denormalization solely for claimed precision.** The arithmetic dtype is unchanged, so this does not improve numerical precision and would allocate additional full-latent intermediates.
+- **Removing `keep_proportion`.** Correct dual-axis alignment does not require deleting aspect-ratio lock; the fork keeps the option and solves the actual geometry problem.
+
+Because of these intentional choices, this fork may remain logically diverged from LBH upstream even after all useful upstream changes have been evaluated.
 
 ### Validation scope
 
-Synthetic tests cover native/split AV validation, learned-upscaler delegation, exact target geometry, keyframe/reference behavior, denoise-mask reconstruction, Continuum refinement-state resolution and precedence over stale manual fallback wires, actual internal guider/sampler invocation, optional native-fallback CFG behavior, partial-denoise guards, and exact locked-audio restoration.
+Synthetic tests cover native/split AV validation, learned-upscaler delegation, exact target geometry, keyframe/reference behavior, denoise-mask reconstruction, Continuum refinement-state resolution and precedence over stale manual fallback wires, actual internal guider/sampler invocation, optional native-fallback CFG behavior, partial-denoise guards, exact locked-audio restoration, dual-axis/common-grid alignment, long-video non-chunked execution, cached-model device restore, and integrated pre-refinement offload targeting.
 
-The branch includes a Python 3.10–3.13 GitHub Actions matrix for compile and CPU/mock tests. The integrated path has also been exercised successfully in a real MiniMax H3 CUDA workflow with the LBH learned checkpoint; exact quality and performance remain workload- and hardware-dependent.
+GitHub Actions validates Python 3.10–3.13 and multiple reviewed ComfyUI source revisions using the native repository-root fixture, Ruff on the clean integration/test surfaces, `compileall`, native ComfyUI source-contract tests, and the full refinement regression suite. The integrated path has also been exercised successfully in a real MiniMax H3 CUDA workflow with the LBH learned checkpoint; exact quality and performance remain workload- and hardware-dependent.
 
 ---
 
