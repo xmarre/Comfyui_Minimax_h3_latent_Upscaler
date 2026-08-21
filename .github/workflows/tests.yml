@@ -9,29 +9,76 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  unit-and-native-fixture:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        comfy_ref:
+          - e377e263049f9338b4d12a3dd417b36ae62948ff
+          - 0dd9b154a1654fc699dcdc3af066c7cce096045a
+          - 5599a05fea715cb2aff11f30f5b06e16d0dfa0c4
+          - 27bca654eb9a70237d93f56a6ea336ab55f8925d
+        python_version:
+          - "3.12"
+        include:
+          - comfy_ref: 27bca654eb9a70237d93f56a6ea336ab55f8925d
+            python_version: "3.10"
+          - comfy_ref: 27bca654eb9a70237d93f56a6ea336ab55f8925d
+            python_version: "3.11"
+          - comfy_ref: 27bca654eb9a70237d93f56a6ea336ab55f8925d
+            python_version: "3.13"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out custom node
+        uses: actions/checkout@v4
         with:
-          python-version: ${{ matrix.python-version }}
+          persist-credentials: false
+
+      - name: Check out reviewed ComfyUI source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          repository: comfyanonymous/ComfyUI
+          ref: ${{ matrix.comfy_ref }}
+          path: ComfyUI
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python_version }}
+          cache: pip
+
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-          python -m pip install "pytest>=8.4,<10" safetensors
-      - name: Compile Python
-        run: python -m compileall -q nodes tests
-      - name: Run isolated unit tests
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install pytest ruff numpy psutil safetensors einops tqdm pyyaml pillow packaging comfy-kitchen==0.2.26 comfy-aimdo==0.4.13
+
+      - name: Run Ruff and compileall
         run: |
-          TEST_ROOT="$RUNNER_TEMP/h3-refine-unit"
-          mkdir -p "$TEST_ROOT"
-          cp -R nodes "$TEST_ROOT/nodes"
-          cp -R tests "$TEST_ROOT/tests"
-          cd "$TEST_ROOT"
-          python -m pytest -q -p no:cacheprovider tests
+          python -m ruff check \
+            nodes/minimax_h3_refine.py \
+            nodes/minimax_h3_refine_support.py \
+            nodes/minimax_h3_refine_sequence.py \
+            tests/conftest.py \
+            tests/test_h3_refine_node.py \
+            tests/test_h3_refine_sequence.py \
+            tests/test_h3_refine_support.py \
+            tests/test_native_comfyui_fixture.py \
+            --ignore I001,N999,C408,UP035,S110,BLE001
+          python -m compileall -q nodes tests
+
+      - name: Run native ComfyUI source-contract tests
+        env:
+          COMFYUI_PATH: ${{ github.workspace }}/ComfyUI
+          PYTHONPATH: ${{ github.workspace }}/ComfyUI:${{ github.workspace }}
+        run: python -m pytest -q tests/test_native_comfyui_fixture.py
+
+      - name: Run refinement regression suite
+        env:
+          COMFYUI_PATH: ${{ github.workspace }}/ComfyUI
+          PYTHONPATH: ${{ github.workspace }}/ComfyUI:${{ github.workspace }}
+        run: |
+          python -m pytest -q \
+            --ignore=tests/test_native_comfyui_fixture.py \
+            tests
