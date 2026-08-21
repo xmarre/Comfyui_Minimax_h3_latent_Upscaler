@@ -1,0 +1,55 @@
+name: verify v0.1.0 publication
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/verify-v010-publication.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/v0.1.0" \
+            > /tmp/release.json
+          python - <<'PY'
+          import json
+          data = json.load(open('/tmp/release.json', encoding='utf-8'))
+          assets = {asset['name'] for asset in data.get('assets', [])}
+          required = {'Comfyui_Minimax_h3_latent_Upscaler-v0.1.0.zip', 'SHA256SUMS'}
+          missing = required - assets
+          if missing:
+              raise SystemExit(f'missing release assets: {sorted(missing)}; found={sorted(assets)}')
+          print('release_tag=', data.get('tag_name'))
+          print('release_name=', data.get('name'))
+          print('release_assets=', sorted(assets))
+          PY
+
+      - name: Verify Comfy Registry version
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            "https://api.comfy.org/nodes/comfyui-minimax-h3-latent-upscaler/versions" \
+            > /tmp/registry.json
+          python - <<'PY'
+          import json
+          data = json.load(open('/tmp/registry.json', encoding='utf-8'))
+          versions = data if isinstance(data, list) else data.get('versions', [])
+          matches = [item for item in versions if item.get('version') == '0.1.0']
+          if not matches:
+              raise SystemExit(f'Comfy Registry does not contain v0.1.0; payload={data!r}')
+          item = matches[0]
+          print('registry_version=', item.get('version'))
+          print('registry_status=', item.get('status'))
+          print('registry_extract_status=', item.get('comfy_node_extract_status'))
+          print('registry_download_url=', item.get('downloadUrl'))
+          PY
