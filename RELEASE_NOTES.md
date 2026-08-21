@@ -24,7 +24,7 @@ No external `BasicGuider`, `DisableNoise` or `SamplerCustomAdvanced` reconstruct
 
 ## Exact H3 Continuum handoff
 
-H3 Continuum v3.4.1 can supply `video_latents`, `audio_latents` and `refine_state` per chunk. A valid `refine_state` is authoritative and carries the exact per-chunk Continuum MODEL wrapper plus positive conditioning used by sampler 1.
+H3 Continuum PR #15 (the planned v3.4.1 release head) supplies `video_latents`, `audio_latents` and `refine_state` per chunk. A valid `refine_state` is authoritative and carries the exact per-chunk Continuum MODEL wrapper plus positive conditioning used by sampler 1.
 
 Stale manual `model`, `positive` and `negative` fallback wires are ignored when a valid `refine_state` is connected, preventing upgraded workflows from crashing or silently changing the positive-only Continuum contract. Malformed refinement state still fails closed.
 
@@ -32,9 +32,9 @@ Native Masked denoise masks remain aligned with the matching chunk. Only the tar
 
 ## Short-refinement interoperability
 
-The refiner clones the exact sampler-1 MODEL and marks only sampler 2 with an `h3_refinement` API-v1 contract containing the full H3 sigma reference. This lets coordinated Spectrum and DiffAid releases distinguish a short low-sigma refinement from ordinary Continuum generation without mutating the source MODEL.
+The refiner clones the exact sampler-1 MODEL and marks only sampler 2 with an `h3_refinement` API-v1 contract containing the full H3 sigma reference. This lets coordinated Spectrum and DiffAid release heads distinguish a short low-sigma refinement from ordinary Continuum generation without mutating the source MODEL.
 
-With Spectrum MiniMax H3 v0.2.17 and DiffAid v1.0.7, a stable three-step refinement can use:
+With Spectrum MiniMax H3 PR #73 (planned v0.2.17) and DiffAid PR #11 (planned v1.0.7), a stable three-step refinement can use:
 
 ```text
 actual -> forecast -> actual
@@ -50,6 +50,8 @@ The validated 0.7 MP native -> 1.75x learned-upscale -> three-step refinement re
 
 ## Reliability
 
-The release includes Python 3.10-3.13 compile/test CI and regression coverage for exact refinement-state resolution, stale fallback precedence, malformed-state fail-closed behavior, native and split AV validation, enlarged-grid noise generation, conditioning geometry, masks, locked-audio restoration, CFG fallback behavior, empty sigma schedules and real internal sampler invocation.
+The release includes Python 3.10-3.13 compile/test CI and regression coverage for exact refinement-state resolution, stale fallback precedence, malformed-state fail-closed behavior, native and split AV validation, enlarged-grid noise generation, conditioning geometry, masks, sequence-aware post-refine continuation carry, locked-audio restoration, CFG fallback behavior, empty sigma schedules and real internal sampler invocation.
 
-This release is coordinated with H3 Continuum v3.4.1, Spectrum MiniMax H3 v0.2.17 and ComfyUI-DiffAid-Patches v1.0.7.
+## Coordinated release status
+
+The exact cross-repository Continuum/Spectrum/DiffAid interoperability described above is coordinated with still-open release-head PRs: H3 Continuum #15 (planned v3.4.1), Spectrum MiniMax H3 #73 (planned v0.2.17), and ComfyUI-DiffAid-Patches #11 (planned v1.0.7). Their current `main` package versions are 3.4.0, 0.2.16 and 1.0.6 respectively. The standalone upscalers and native/non-Continuum refinement fallback do not depend on those pending releases.
