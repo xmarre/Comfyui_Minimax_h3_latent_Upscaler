@@ -6,6 +6,7 @@ on:
       - ".github/workflows/verify-v010-publication.yml"
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -31,6 +32,27 @@ jobs:
           print('release_tag=', data.get('tag_name'))
           print('release_name=', data.get('name'))
           print('release_assets=', sorted(assets))
+          PY
+
+      - name: Discover registry publish runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/publish.yml/runs?branch=main&per_page=10" \
+            > /tmp/publish-runs.json
+          python - <<'PY'
+          import json
+          data = json.load(open('/tmp/publish-runs.json', encoding='utf-8'))
+          runs = data.get('workflow_runs', [])
+          print('publish_run_count=', len(runs))
+          for run in runs:
+              keys = ('id', 'name', 'event', 'status', 'conclusion', 'run_number', 'head_sha', 'created_at')
+              print('publish_run=', {key: run.get(key) for key in keys})
           PY
 
       - name: Verify Comfy Registry version
