@@ -47,6 +47,12 @@ def test_registered_refine_node_consumes_and_emits_chunk_lists():
     assert sequence.NODE_CLASS_MAPPINGS["MinimaxH3LatentUpscaler3DRefineHandoff"] is cls
 
 
+def test_sequence_schema_inherits_offload_after_upscale_control():
+    schema = sequence.MinimaxH3LatentUpscaler3DRefineSequence.INPUT_TYPES()
+    assert "offload_after_upscale" in schema["required"]
+    assert schema["required"]["offload_after_upscale"][1]["default"] is False
+
+
 def test_carry_replaces_only_fully_protected_video_prefix():
     current_video = torch.zeros((1, 24, 5, 3, 4))
     previous_video = torch.zeros_like(current_video)
@@ -101,6 +107,7 @@ def test_unlocked_audio_can_carry_its_exact_native_masked_prefix():
 
 def test_sequence_refinement_carries_actual_post_refine_tail_before_next_sample(monkeypatch):
     seen_clean_videos = []
+    offload_calls = []
 
     def fake_build(current_latent, positive, **_kwargs):
         index = int(current_latent["chunk"])
@@ -125,6 +132,11 @@ def test_sequence_refinement_carries_actual_post_refine_tail_before_next_sample(
     monkeypatch.setattr(sequence, "build_clean_h3_upscale", fake_build)
     monkeypatch.setattr(sequence, "_model_with_refinement_contract", lambda model: model)
     monkeypatch.setattr(sequence, "run_h3_refinement", fake_sample)
+    monkeypatch.setattr(
+        sequence,
+        "_offload_cached_lbh_model",
+        lambda name, device, precision: offload_calls.append((name, device, precision)) or True,
+    )
 
     states = [
         {"api": 1, "model": object(), "positive": [[torch.ones(1), {"chunk": 1}]]},
@@ -147,10 +159,12 @@ def test_sequence_refinement_carries_actual_post_refine_tail_before_next_sample(
         [1.0],
         ["cpu"],
         ["fp32"],
+        [True, False],
         refine_state=states,
     )
 
     assert len(outputs) == 2
     assert len(seen_clean_videos) == 2
+    assert offload_calls == [("model.safetensors", "cpu", "fp32")]
     assert torch.all(seen_clean_videos[1][:, :, :2] == 11.0)
     assert torch.all(seen_clean_videos[1][:, :, 2:] == 2.0)
