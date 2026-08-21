@@ -6,6 +6,7 @@ Minimax H3 Latent Upscaler - ComfyUI inference node (pure 3D conv version)
 - Auto-detects model architecture (channels, blocks, temporal layout)
 - FP32 / FP16 / BF16 inference, VRAM-optimized
 """
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -67,23 +68,70 @@ if _LATENT_UPSCALE_FOLDER not in folder_paths.folder_names_and_paths:
 # Hidden from the UI on purpose: 1280x704 px -> 80x44 latent.
 VAE_DOWNSAMPLE = 16
 
+
+def _alignment_grid(align):
+    """Return a pixel grid compatible with both the requested alignment and H3 VAE."""
+    return math.lcm(max(1, int(align)), VAE_DOWNSAMPLE)
+
+
+def _aligned_pixel_size(w_target, h_target, w_in, h_in, align, keep_proportion):
+    """Choose final pixel dimensions on a dual-axis H3-safe alignment grid.
+
+    When aspect-ratio lock is enabled, preserve the historical width-driven
+    semantics but choose the nearby grid pair with the smallest aspect-ratio and
+    size error instead of letting the second axis fall off the requested grid.
+    """
+    grid = _alignment_grid(align)
+    w_target = max(float(grid), float(w_target))
+    h_target = max(float(grid), float(h_target))
+
+    if not keep_proportion:
+        return (
+            max(grid, int(round(w_target / grid)) * grid),
+            max(grid, int(round(h_target / grid)) * grid),
+        )
+
+    aspect = float(w_in) / float(h_in)
+    ideal_h = w_target / aspect
+    w_center = max(1, int(round(w_target / grid)))
+    h_center = max(1, int(round(ideal_h / grid)))
+
+    best = None
+    for w_units in range(max(1, w_center - 2), w_center + 3):
+        for h_units in range(max(1, h_center - 2), h_center + 3):
+            width = w_units * grid
+            height = h_units * grid
+            ratio_error = abs(math.log((width / height) / aspect))
+            size_error = abs(width / w_target - 1.0) + abs(height / ideal_h - 1.0)
+            score = (
+                ratio_error * 4.0 + size_error,
+                ratio_error,
+                size_error,
+                abs(width - w_target) + abs(height - ideal_h),
+            )
+            if best is None or score < best[0]:
+                best = (score, width, height)
+
+    return best[1], best[2]
+
+
 # ==========================================
 # Minimax H3 latent normalization stats (24 channels, from training code)
 # ==========================================
 LATENTS_MEAN = [
-    0.858090341091156, -0.9606591463088989, 1.0661640167236328, -0.5090325474739075, 
-    -0.2727581858634949, -1.3675414323806763, -0.2553254961967468, -0.26907554268836975, 
-    -0.5376840829849243, -0.0464097298681736, 0.6657370328903198, 0.19690127670764923, 
-    -0.5460608005523682, -0.4035342037677765, -0.23683024942874908, 0.25928452610969543, 
-    -0.30133944749832153, 0.211341992020607, -1.1206848621368408, 0.3581933379173279, 
+    0.858090341091156, -0.9606591463088989, 1.0661640167236328, -0.5090325474739075,
+    -0.2727581858634949, -1.3675414323806763, -0.2553254961967468, -0.26907554268836975,
+    -0.5376840829849243, -0.0464097298681736, 0.6657370328903198, 0.19690127670764923,
+    -0.5460608005523682, -0.4035342037677765, -0.23683024942874908, 0.25928452610969543,
+    -0.30133944749832153, 0.211341992020607, -1.1206848621368408, 0.3581933379173279,
     -0.04225143790245056, 0.2604829967021942, 0.22864092886447906, 0.7056031823158264
 ]
-LATENTS_STD  = [
-    1.2223774194717407, 1.2767263650894165, 1.6831774711608887, 1.7549455165863037, 
-    1.5636216402053833, 2.194143533706665, 0.9653137922286987, 1.0569885969161987, 
-    0.841948926448822, 0.7729952931404114, 1.8955937623977661, 0.946841835975647, 
-    0.7996809482574463, 0.44988900423049927, 0.7197399735450745, 0.6936293244361877, 
-    2.961095094680786, 2.7694199085235596, 3.0496184825897217, 2.1088054180145264, 
+LATENTS_STD = [
+    1.2223774194717407, 1.2767263650894165, 1.6831774711608887, 1.7549455165863037,
+    1.5636216402053833, 2.194143533706665, 0.9653137922286987, 1.0569885969161987,
+    0.841948926448822, 0.7729952931404114, 1.8955937623977661, 0.946841835975647,
+    0.7996809482574463, 0.44988900423049927, 0.7197399735450745, 0.6936293244361877,
+    2.961095094680786, 2.7694199085235596, 3.0496184825897217, 2.1088054180145264,
     3.276226282119751, 3.1627357006073, 2.2816812992095947, 2.6127843856811523
 ]
 
@@ -185,7 +233,7 @@ class LatentResizer3D(nn.Module):
         embed_dim = 64
         self.embed = nn.Sequential(
             nn.Linear(1, embed_dim), nn.SiLU(), nn.Linear(embed_dim, embed_dim))
-        
+
         self.in_blocks = nn.ModuleList()
         for b in range(in_blocks):
             if (b == 1 or b == in_blocks - 1) and attn:
@@ -193,7 +241,7 @@ class LatentResizer3D(nn.Module):
             self.in_blocks.append(ResBlockEmb3D(channels, embed_dim, dropout))
             if temporal_every > 0 and b % temporal_every == 0:
                 self.in_blocks.append(TemporalConv(channels, temporal_kernel))
-                
+
         self.out_blocks = nn.ModuleList()
         for b in range(out_blocks):
             if (b == 1 or b == out_blocks - 1) and attn:
@@ -201,7 +249,7 @@ class LatentResizer3D(nn.Module):
             self.out_blocks.append(ResBlockEmb3D(channels, embed_dim, dropout))
             if temporal_every > 0 and b % temporal_every == 0:
                 self.out_blocks.append(TemporalConv(channels, temporal_kernel))
-                
+
         self.norm_out = normalization(channels)
         self.conv_out = nn.Conv3d(channels, in_channels, 3, padding=1)
 
@@ -328,14 +376,16 @@ def _detect_arch(sd):
     else:
         cfg["temporal_every"] = 0
 
-    if any('attn' in k for k in sd): cfg["attn"] = True 
+    if any('attn' in k for k in sd): cfg["attn"] = True
     cfg["attn"] = False  # force off at inference for speed/stability
     return cfg
 
 def load_model(name, device, precision):
     cache_key = f"{name}::{device}::{precision}"
     if cache_key in MODEL_CACHE:
-        return MODEL_CACHE[cache_key]
+        # A cached CUDA model may have been explicitly offloaded after the prior
+        # execution. Moving an already-correct model is a no-op in PyTorch.
+        return MODEL_CACHE[cache_key].to(device)
 
     path = os.path.join(get_models_dir(), name)
     if not os.path.exists(path):
@@ -410,13 +460,35 @@ class MinimaxH3LatentUpscaler3D(io.ComfyNode):
                     ],
                 ),
 
-                io.Int.Input("align", default=32, min=1, max=512, step=1,
-                             tooltip="Pixel-space alignment: output W/H are rounded to multiples of this value (e.g. 16/32/64)."),
-                io.Boolean.Input("keep_proportion", default=True,
-                                 tooltip="Lock the original aspect ratio; height is derived from the aligned width to avoid distortion."),
+                io.Int.Input(
+                    "align",
+                    default=32,
+                    min=1,
+                    max=512,
+                    step=1,
+                    tooltip=(
+                        "Pixel-space alignment. Both output axes are placed on a grid compatible "
+                        "with this value and the H3 16x VAE grid."
+                    ),
+                ),
+                io.Boolean.Input(
+                    "keep_proportion",
+                    default=True,
+                    tooltip=(
+                        "Preserve the source aspect ratio as closely as the requested alignment grid allows."
+                    ),
+                ),
 
                 io.Combo.Input("device", options=["cuda", "cpu"], default="cuda"),
                 io.Combo.Input("precision", options=["fp32", "fp16", "bf16"], default="fp16"),
+                io.Boolean.Input(
+                    "offload_after_upscale",
+                    default=False,
+                    tooltip=(
+                        "Move the cached learned upscaler to CPU after inference to free VRAM. "
+                        "Leave off for faster repeated runs when VRAM is available."
+                    ),
+                ),
             ],
             outputs=[
                 io.AnyType.Output("latent", tooltip="Upscaled latent."),
@@ -426,7 +498,7 @@ class MinimaxH3LatentUpscaler3D(io.ComfyNode):
     @classmethod
     def execute(cls, latent: dict, model_name: str, mode: UpscaleConfig,
                 align: int, keep_proportion: bool,
-                device: str, precision: str) -> io.NodeOutput:
+                device: str, precision: str, offload_after_upscale: bool = False) -> io.NodeOutput:
 
         if model_name.startswith('('):
             raise ValueError("Please place model files into the latent_upscale_models directory")
@@ -468,21 +540,18 @@ class MinimaxH3LatentUpscaler3D(io.ComfyNode):
         else:
             raise ValueError(f"Unsupported mode: {selected_mode}")
 
-        # 2. Pixel-space alignment
-        alignment = max(1, align)
-        if keep_proportion:
-            # Width drives the alignment; height follows the aspect ratio exactly.
-            w_pixel_aligned = round(w_pixel_target / alignment) * alignment
-            h_pixel_aligned = w_pixel_aligned / (w_in / h_in)
-        else:
-            w_pixel_aligned = round(w_pixel_target / alignment) * alignment
-            h_pixel_aligned = round(h_pixel_target / alignment) * alignment
+        # 2. Use one common grid so neither axis can be alignment-valid and then
+        #    become invalid again when snapped to the 16x H3 VAE grid.
+        w_pixel_final, h_pixel_final = _aligned_pixel_size(
+            w_pixel_target,
+            h_pixel_target,
+            w_in,
+            h_in,
+            align,
+            bool(keep_proportion),
+        )
 
-        # 3. Snap to VAE grid so latent sizes are exact integers
-        w_pixel_final = round(w_pixel_aligned / downsample) * downsample
-        h_pixel_final = round(h_pixel_aligned / downsample) * downsample
-
-        # 4. Back to LATENT space
+        # 3. Back to LATENT space (the helper already guarantees VAE divisibility).
         w_out = max(1, int(w_pixel_final // downsample))
         h_out = max(1, int(h_pixel_final // downsample))
 
@@ -495,15 +564,17 @@ class MinimaxH3LatentUpscaler3D(io.ComfyNode):
         print(f"[MinimaxH3-3D] Latent {w_in}x{h_in} -> {w_out}x{h_out} | "
               f"Pixels {w_out * downsample}x{h_out * downsample} | scale={effective_scale:.3f}")
 
-        # 5. Inference
+        # 4. Inference. Keep the full temporal sequence intact: GroupNorm and the
+        #    stacked 3D/temporal convolutions make naive temporal chunking non-equivalent.
         model = load_model(model_name, dev, precision)
         norm_mean, norm_std = _make_norm_tensors(dev, compute_dtype)
 
         with torch.inference_mode():
-            # In-place normalization: no intermediate tensors allocated.
+            # In-place normalization is safe because s is a private copy and avoids
+            # another full-size latent allocation. It has the same arithmetic dtype.
             s.sub_(norm_mean).div_(norm_std)
             out = model(s, scale=effective_scale, target_size=(t, h_out, w_out))
-            del s  # free the normalized input before denormalizing the output
+            del s
             out.mul_(norm_std).add_(norm_mean)
 
         if was_4d:
@@ -513,6 +584,8 @@ class MinimaxH3LatentUpscaler3D(io.ComfyNode):
         out = out.to(device="cpu", dtype=orig_dtype)
 
         if dev.type == "cuda":
+            if offload_after_upscale:
+                model.to("cpu")
             torch.cuda.empty_cache()
 
         return io.NodeOutput({"samples": out})

@@ -13,6 +13,7 @@ import torch
 
 from .minimax_h3_refine_support import (
     _h3_padded_spatial_size,
+    _lbh_module,
     _resolve_h3_sources,
     _scan_models,
     _upscale_modes,
@@ -119,6 +120,28 @@ def _model_with_refinement_contract(model: Any) -> Any:
     copied_options["transformer_options"] = transformer_options
     refined_model.model_options = copied_options
     return refined_model
+
+
+def _offload_cached_lbh_model(model_name: str, device: str, precision: str) -> bool:
+    """Move only this learned upscaler cache entry to CPU before sampler 2.
+
+    This is deliberately opt-in. High-VRAM/repeated-run workflows keep the model
+    resident by default; low-VRAM workflows can reclaim its CUDA allocation after
+    the learned upscale without discarding the cache object itself.
+    """
+    target = torch.device(device if (device == "cpu" or torch.cuda.is_available()) else "cpu")
+    if target.type != "cuda":
+        return False
+
+    lbh = _lbh_module()
+    cache_key = f"{model_name}::{target}::{precision}"
+    cached = lbh.MODEL_CACHE.get(cache_key)
+    if cached is None:
+        return False
+
+    cached.to("cpu")
+    torch.cuda.empty_cache()
+    return True
 
 
 def build_clean_h3_upscale(
@@ -357,6 +380,17 @@ class MinimaxH3LatentUpscaler3DRefine:
                 ),
                 "device": (["cuda", "cpu"], {"default": "cuda"}),
                 "precision": (["fp32", "fp16", "bf16"], {"default": "fp16"}),
+                "offload_after_upscale": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "advanced": True,
+                        "tooltip": (
+                            "Move the cached learned upscaler to CPU after the upscale and before "
+                            "sampler 2. Useful for low VRAM; leave off for faster repeated runs."
+                        ),
+                    },
+                ),
             },
             "optional": {
                 "audio_latent": (
@@ -434,6 +468,7 @@ class MinimaxH3LatentUpscaler3DRefine:
         cfg,
         device,
         precision,
+        offload_after_upscale=False,
         audio_latent=None,
         refine_state=None,
         model=None,
@@ -464,6 +499,9 @@ class MinimaxH3LatentUpscaler3DRefine:
             audio_latent=audio_latent,
             negative=refine_negative,
         )
+        if offload_after_upscale:
+            _offload_cached_lbh_model(model_name, device, precision)
+
         refine_model = _model_with_refinement_contract(refine_model)
         refined = run_h3_refinement(
             clean,
