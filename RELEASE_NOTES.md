@@ -1,57 +1,69 @@
-# MiniMax H3 Latent Upscaler v0.1.0
+# MiniMax H3 Latent Upscaler v0.1.1
 
-v0.1.0 is the first formal automated release of the learned MiniMax H3 latent upscaler repository and includes the complete integrated high-resolution refinement path.
+v0.1.1 is a backward-compatible maintenance release that consolidates the post-v0.1.0 upstream review, CI hardening, alignment fixes, learned-model offload controls, and the final sequence-aware H3 Continuum handoff fix.
 
-## Learned latent upscaling
+## Selective LBH upstream sync
 
-The existing 2D and 3D learned upscalers remain available. The 3D node supports multiplier, target-dimension and megapixel sizing, precision selection, latent-grid alignment and host-memory optimization.
+LBH's 2026-08-21 upstream changes were reviewed individually rather than merged wholesale.
 
-## Integrated MiniMax H3 upscale + refine
+Adopted with redesign:
 
-The new `MiniMax H3 Latent Upscaler + Refine (3D)` performs the complete second-pass operation internally:
+- **Dual-axis output alignment** now uses a common pixel grid compatible with both the requested `align` value and H3's 16× VAE grid: `lcm(align, 16)`.
+- **`keep_proportion=True` remains supported.** The node chooses a nearby valid aligned W/H pair instead of solving alignment by silently distorting the source aspect ratio.
+- **Optional learned-model offload** is available through `offload_after_upscale`, but remains `False` by default to avoid unnecessary CPU↔GPU transfers on repeated/high-VRAM workflows.
+- **Cached model restore** moves an optionally offloaded learned upscaler back to the requested device on the next use.
 
-1. accept native joint H3 AV state or split Continuum video/audio latents;
-2. run only the 24-channel video latent through the learned 3D upscaler;
-3. rebuild the high-resolution joint AV latent;
-4. resize target keyframes and video denoise masks while preserving independent reference grids;
-5. generate fresh noise directly on the enlarged H3 grid;
-6. construct the appropriate guider;
-7. execute the supplied ComfyUI sampler over the supplied low-sigma schedule;
-8. optionally restore pass-1 audio exactly;
-9. return a decode-ready H3 LATENT.
+Deliberately not adopted:
 
-No external `BasicGuider`, `DisableNoise` or `SamplerCustomAdvanced` reconstruction is required.
+- fixed 16-frame temporal chunking with only `temporal_kernel // 2` overlap, because repeated Conv3d/TemporalConv layers plus GroupNorm make it non-equivalent to whole-sequence execution and allow chunk-boundary changes;
+- forced CPU offload after every upscale;
+- out-of-place normalization/denormalization changes that do not improve arithmetic precision but do add full-latent temporary allocations;
+- removal of `keep_proportion`.
 
-## Exact H3 Continuum handoff
+## Sequence-aware Continuum offload fix
 
-H3 Continuum PR #15 (the planned v3.4.1 release head) supplies `video_latents`, `audio_latents` and `refine_state` per chunk. A valid `refine_state` is authoritative and carries the exact per-chunk Continuum MODEL wrapper plus positive conditioning used by sampler 1.
+The sequence-aware `MiniMax H3 Latent Upscaler + Refine (3D)` path now correctly accepts and propagates the inherited `offload_after_upscale` setting.
 
-Stale manual `model`, `positive` and `negative` fallback wires are ignored when a valid `refine_state` is connected, preventing upgraded workflows from crashing or silently changing the positive-only Continuum contract. Malformed refinement state still fails closed.
+For list-valued H3 Continuum execution the node now:
 
-Native Masked denoise masks remain aligned with the matching chunk. Only the target video mask is resized to the enlarged grid; the audio mask is preserved.
+1. resolves the per-chunk learned-upscaler model/device/precision settings;
+2. performs the learned upscale;
+3. optionally offloads only that learned-upscaler cache entry before sampler 2;
+4. preserves the exact post-refine continuation carry into the next chunk;
+5. leaves the default behavior unchanged when `offload_after_upscale=False`.
 
-## Short-refinement interoperability
+This closes the gap where the base integrated node exposed the control but the sequence-aware list execution path did not accept/propagate it correctly.
 
-The refiner clones the exact sampler-1 MODEL and marks only sampler 2 with an `h3_refinement` API-v1 contract containing the full H3 sigma reference. This lets coordinated Spectrum and DiffAid release heads distinguish a short low-sigma refinement from ordinary Continuum generation without mutating the source MODEL.
+## Alignment and conditioning reliability
 
-With Spectrum MiniMax H3 PR #73 (planned v0.2.17) and DiffAid PR #11 (planned v1.0.7), a stable three-step refinement can use:
+The 3D learned upscale path guarantees that both final output axes satisfy the common requested/H3 VAE alignment grid. The integrated refiner continues to preserve H3 target-conditioning semantics:
 
-```text
-actual -> forecast -> actual
-```
+- target `minimax_keyframes` follow the enlarged target grid;
+- independent `minimax_refs` keep their own latent/RoPE geometry;
+- Native-Masked video/audio masks remain paired with the correct Continuum chunk;
+- sequence refinement carries the actual post-refine tail rather than a stale low-resolution prefix.
 
-while genuine external-patch transitions remain hard safety barriers.
+## CI and compatibility hardening
 
-## Runtime validation
+The repository no longer relies on the old isolated copied-test workaround. GitHub Actions now tests against reviewed native ComfyUI source revisions with the repository root imported directly.
 
-The full CUDA path was validated using H3 Continuum exact `refine_state`, DiffAid, Untwisting RoPE metadata, native ER-SDE and Spectrum on sampler 2.
+The matrix validates:
 
-The validated 0.7 MP native -> 1.75x learned-upscale -> three-step refinement reported `2 actual + 1 forecast` per refined chunk and produced user-confirmed impeccable media quality. The Refine node dropped from roughly 302.5 s with three native target-resolution NFEs to roughly 212.7 s with the middle NFE forecast in the compared run.
+- Python 3.10, 3.11, 3.12 and 3.13;
+- multiple reviewed ComfyUI revisions;
+- Ruff on the maintained integration/test surfaces;
+- `compileall`;
+- native ComfyUI source-contract tests;
+- the full refinement regression suite;
+- dual-axis/common-grid alignment;
+- whole-sequence temporal execution;
+- cached-model restore/offload behavior;
+- sequence-aware per-chunk offload propagation.
 
-## Reliability
+## Documentation corrections
 
-The release includes Python 3.10-3.13 compile/test CI and regression coverage for exact refinement-state resolution, stale fallback precedence, malformed-state fail-closed behavior, native and split AV validation, enlarged-grid noise generation, conditioning geometry, masks, sequence-aware post-refine continuation carry, locked-audio restoration, CFG fallback behavior, empty sigma schedules and real internal sampler invocation.
+The README now documents the selective-upstream policy, exact alignment semantics and offload tradeoffs. The installation command also correctly clones this `xmarre` fork rather than the LBH upstream repository.
 
-## Coordinated release status
+## Upgrade notes
 
-The exact cross-repository Continuum/Spectrum/DiffAid interoperability described above is coordinated with still-open release-head PRs: H3 Continuum #15 (planned v3.4.1), Spectrum MiniMax H3 #73 (planned v0.2.17), and ComfyUI-DiffAid-Patches #11 (planned v1.0.7). Their current `main` package versions are 3.4.0, 0.2.16 and 1.0.6 respectively. The standalone upscalers and native/non-Continuum refinement fallback do not depend on those pending releases.
+No workflow migration is required. Existing workflows keep the same default runtime behavior. `offload_after_upscale` remains disabled unless explicitly enabled.
