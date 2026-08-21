@@ -24,9 +24,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-          python -m pip install pytest safetensors
+          python -m pip install "pytest>=8.4,<9.1" safetensors
       - name: Compile Python
         run: python -m compileall -q nodes tests
       - name: Run tests
         working-directory: tests
-        run: python -m pytest -q -p no:cacheprovider --rootdir=. test_h3_refine_node.py test_h3_refine_support.py
+        run: python -m pytest -q -p no:cacheprovider --rootdir=. .
