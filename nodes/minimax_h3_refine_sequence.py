@@ -20,6 +20,7 @@ import torch
 from .minimax_h3_refine import (
     MinimaxH3LatentUpscaler3DRefine as _BaseRefine,
     _model_with_refinement_contract,
+    _offload_cached_lbh_model,
     _resolve_refine_contract,
     build_clean_h3_upscale,
     run_h3_refinement,
@@ -141,6 +142,7 @@ class MinimaxH3LatentUpscaler3DRefineSequence(_BaseRefine):
         cfg,
         device,
         precision,
+        offload_after_upscale=False,
         audio_latent=None,
         refine_state=None,
         model=None,
@@ -168,6 +170,7 @@ class MinimaxH3LatentUpscaler3DRefineSequence(_BaseRefine):
                 cfg,
                 device,
                 precision,
+                offload_after_upscale=offload_after_upscale,
                 audio_latent=audio_latent,
                 refine_state=refine_state,
                 model=model,
@@ -190,11 +193,15 @@ class MinimaxH3LatentUpscaler3DRefineSequence(_BaseRefine):
             )
             current_negative = None if current_state is not None else _value_at(negative, index)
             current_lock_audio = bool(_value_at(lock_audio, index))
+            current_offload_after_upscale = bool(_value_at(offload_after_upscale, index))
+            current_model_name = _value_at(model_name, index)
+            current_device = _value_at(device, index)
+            current_precision = _value_at(precision, index)
 
             clean, positive_out, negative_out = build_clean_h3_upscale(
                 current_latent,
                 refine_positive,
-                model_name=_value_at(model_name, index),
+                model_name=current_model_name,
                 mode=_value_at(mode, index),
                 scale=float(_value_at(scale, index)),
                 width=int(_value_at(width, index)),
@@ -202,12 +209,18 @@ class MinimaxH3LatentUpscaler3DRefineSequence(_BaseRefine):
                 megapixels=float(_value_at(megapixels, index)),
                 align=int(_value_at(align, index)),
                 keep_proportion=bool(_value_at(keep_proportion, index)),
-                device=_value_at(device, index),
-                precision=_value_at(precision, index),
+                device=current_device,
+                precision=current_precision,
                 lock_audio=current_lock_audio,
                 audio_latent=_value_at(audio_latent, index),
                 negative=current_negative,
             )
+            if current_offload_after_upscale:
+                _offload_cached_lbh_model(
+                    current_model_name,
+                    current_device,
+                    current_precision,
+                )
 
             if current_state is not None and previous_refined is not None:
                 video_steps, audio_steps = _carry_previous_refined_prefix(
