@@ -14,6 +14,7 @@ Learned · High-fidelity · 2D & 3D Variants
 
 ## 📰 News
 
+- [2026-09-04] 🔁 **Sampler-internal learned handoff provider**: added an API-v1 exact-target 3D clean-video provider for Flow-Aligned Regenerate progressive handoff. Real-media validation showed strong artifact reduction around 1 MP with zero extra H3 NFEs; `source_scale=0.70` was the best tested quality/speed point around 1 MP, while `0.65` began losing likeness/tonal stability.
 - [2026-08-21] 🔧 **Selective LBH upstream sync**: fixed dual-axis output alignment while preserving aspect-ratio lock, added opt-in learned-model offload for standalone and integrated refinement workflows, and deliberately rejected non-equivalent temporal chunking / forced per-run offload. See [Upstream sync policy](#upstream-sync-policy).
 - [2026-08-20] 🧩 **Integrated MiniMax H3 refinement**: the H3-aware 3D node now performs the complete learned-upscale + low-sigma H3 sampling pass internally. H3 Continuum V3.4 interop uses exact per-chunk `refine_state` from the companion Continuum implementation; no external BasicGuider, DisableNoise, or SamplerCustomAdvanced is required.
 - [2026-08-19] 🚀 **3D node overhaul**: all three resize modes (`scale by multiplier`, `target dimensions`, `megapixels`) merged into a single node; fixed aspect-ratio mismatch in certain modes and edge artifacts at specific sizes.
@@ -252,10 +253,19 @@ audio or runs H3 sampling.
 
 The provider uses the same package-owned checkpoint cache and precision/device policy as the 3D
 node. `offload_after_upscale=False` remains the default; enable it only when reclaiming VRAM is worth
-the transfer cost on every physical chunk. The 46×46→56×56 D14 experiment is approximately 1.217×.
-The training distribution includes arbitrary 1–4× scales, so this is supported by the model's scale
-conditioning, but it is less represented than the dominant 2× training case. Treat quality as
-unvalidated until a matched decoded-media A/B is complete.
+the transfer cost on every physical chunk. The training distribution includes arbitrary 1–4× scales,
+but sampler-internal handoff quality still has to be established by decoded media rather than by the
+training range alone.
+
+In the coordinated Flow-Aligned Regenerate path, learned transfer is now decoded-media validated at
+aggressive progressive transitions. Around a 0.995 MP target, replacing bicubic with `learned_3d` at
+roughly 54×40→72×54 latent geometry fixed the majority of the observed handoff artifacts in the tested
+prompt. `source_scale=0.70` resolved to 800×608→1152×864 and was judged excellent; `0.65` resolved to
+736×576→1152×864 and began losing reference likeness / tonal stability. A later 0.70 run resolved to
+832×640→1184×896 (~1.061 MP target) and was again judged very good, although the generated action was
+different. The BF16 provider added only about 0.6–0.9 s of learned inference per physical chunk and
+zero H3 NFEs in these runs. This is evidence for the coordinated progressive boundary, not a universal
+quality claim for every consumer or prompt.
 
 ### Audio control
 
