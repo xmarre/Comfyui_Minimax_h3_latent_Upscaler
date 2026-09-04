@@ -23,6 +23,15 @@ try:
 except Exception as e:
     logging.error(f"[MinimaxH3] Failed to import 3D node: {e}")
 
+# Stable side-input provider for sampler-internal learned handoffs. The object is
+# configuration-only; loading, inference, and cache ownership remain in this package.
+from .minimax_h3_handoff_provider import (
+    NODE_CLASS_MAPPINGS as NODE_CLASS_MAPPINGS_PROVIDER,
+    NODE_DISPLAY_NAME_MAPPINGS as NODE_DISPLAY_NAME_MAPPINGS_PROVIDER,
+)
+NODE_CLASS_MAPPINGS.update(NODE_CLASS_MAPPINGS_PROVIDER)
+NODE_DISPLAY_NAME_MAPPINGS.update(NODE_DISPLAY_NAME_MAPPINGS_PROVIDER)
+
 # H3-aware refinement is part of this package, so unexpected import or
 # initialization failures must propagate instead of silently hiding the node.
 from .minimax_h3_refine import (

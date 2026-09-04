@@ -14,6 +14,7 @@ Learned · High-fidelity · 2D & 3D Variants
 
 ## 📰 News
 
+- [2026-09-04] 🔁 **Sampler-internal learned handoff provider**: added an API-v1 exact-target 3D clean-video provider for Flow-Aligned Regenerate progressive handoff. Real-media validation showed strong artifact reduction around 1 MP with zero extra H3 NFEs; `source_scale=0.70` was the best tested quality/speed point around 1 MP, while `0.65` began losing likeness/tonal stability.
 - [2026-08-21] 🔧 **Selective LBH upstream sync**: fixed dual-axis output alignment while preserving aspect-ratio lock, added opt-in learned-model offload for standalone and integrated refinement workflows, and deliberately rejected non-equivalent temporal chunking / forced per-run offload. See [Upstream sync policy](#upstream-sync-policy).
 - [2026-08-20] 🧩 **Integrated MiniMax H3 refinement**: the H3-aware 3D node now performs the complete learned-upscale + low-sigma H3 sampling pass internally. H3 Continuum V3.4 interop uses exact per-chunk `refine_state` from the companion Continuum implementation; no external BasicGuider, DisableNoise, or SamplerCustomAdvanced is required.
 - [2026-08-19] 🚀 **3D node overhaul**: all three resize modes (`scale by multiplier`, `target dimensions`, `megapixels`) merged into a single node; fixed aspect-ratio mismatch in certain modes and edge artifacts at specific sizes.
@@ -26,11 +27,12 @@ This project upscales **MiniMax H3** 24-channel video latents with a trained neu
 
 ## Nodes
 
-Three nodes are registered under `video/MinimaxH3`:
+Four nodes are registered under `video/MinimaxH3`:
 
 - **Minimax H3 Latent Upscaler (2D)** — lightweight learned spatial upscale with temporal layers.
 - **Minimax H3 Latent Upscaler (3D)** — fully 3D learned upscale with scale, target-dimensions, and megapixel modes.
 - **MiniMax H3 Latent Upscaler + Refine (3D)** — complete MiniMax H3 two-stage path: learned video upscale, AV reconstruction, exact H3 conditioning/masks, fresh enlarged-grid noise, and the actual second sampling pass.
+- **MiniMax H3 Latent Upscaler Provider (3D) [Experimental]** — immutable, versioned side-input configuration for compatible sampler-internal handoffs.
 
 The standalone 2D/3D nodes remain ordinary `LATENT → LATENT` upscalers. The integrated refine node is for workflows that intentionally perform a second H3 pass.
 
@@ -62,6 +64,7 @@ Comfyui_Minimax_h3_latent_Upscaler/
 │   ├── __init__.py
 │   ├── minimax_h3_latent_upscaler_2d.py
 │   ├── minimax_h3_latent_upscaler_3d.py
+│   ├── minimax_h3_handoff_provider.py    # versioned exact-target side-input API
 │   ├── minimax_h3_refine_support.py       # H3 AV/mask/conditioning helpers
 │   └── minimax_h3_refine.py               # complete H3 learned-upscale + refinement
 ├── tests/
@@ -69,6 +72,7 @@ Comfyui_Minimax_h3_latent_Upscaler/
 │   ├── test_h3_refine_node.py
 │   ├── test_h3_refine_sequence.py
 │   ├── test_h3_refine_support.py
+│   ├── test_handoff_provider.py
 │   ├── test_native_comfyui_fixture.py
 │   └── test_upstream_sync.py
 ├── README.md
@@ -237,6 +241,31 @@ Because a full-noise start gives the clean learned latent zero weight for H3's C
 A full-denoise schedule beginning at `1.0` is rejected. Use a partial-denoise second-pass schedule.
 
 The exact optimal refinement schedule is workload-dependent. A short pass is the intended use; even a short 2× spatial refinement can still be expensive because doubling latent H and W produces roughly four times as many video tokens for every H3 transformer step. Benchmark the second pass on your hardware rather than treating the learned upscaler itself as the dominant cost.
+
+### Progressive handoff provider (experimental)
+
+Connect **MiniMax H3 Latent Upscaler Provider (3D) [Experimental]** to a compatible
+`H3_LATENT_UPSCALER` input, such as Flow-Aligned Regenerate's Target Input progressive handoff,
+and select that consumer's learned transfer mode. The provider applies exactly one learned 3D
+transform to the consumer's clean `B×24×T×H×W` video estimate at the geometry boundary. It accepts
+the consumer's already-resolved exact latent H/W, preserves batch/channels/time, and never receives
+audio or runs H3 sampling.
+
+The provider uses the same package-owned checkpoint cache and precision/device policy as the 3D
+node. `offload_after_upscale=False` remains the default; enable it only when reclaiming VRAM is worth
+the transfer cost on every physical chunk. The training distribution includes arbitrary 1–4× scales,
+but sampler-internal handoff quality still has to be established by decoded media rather than by the
+training range alone.
+
+In the coordinated Flow-Aligned Regenerate path, learned transfer is now decoded-media validated at
+aggressive progressive transitions. Around a 0.995 MP target, replacing bicubic with `learned_3d` at
+roughly 54×40→72×54 latent geometry fixed the majority of the observed handoff artifacts in the tested
+prompt. `source_scale=0.70` resolved to 800×608→1152×864 and was judged excellent; `0.65` resolved to
+736×576→1152×864 and began losing reference likeness / tonal stability. A later 0.70 run resolved to
+832×640→1184×896 (~1.061 MP target) and was again judged very good, although the generated action was
+different. The BF16 provider added only about 0.6–0.9 s of learned inference per physical chunk and
+zero H3 NFEs in these runs. This is evidence for the coordinated progressive boundary, not a universal
+quality claim for every consumer or prompt.
 
 ### Audio control
 
