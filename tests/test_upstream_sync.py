@@ -5,7 +5,9 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
 import torch
+import torch.nn.functional as F
 
 NODES = Path(__file__).resolve().parents[1] / "nodes"
 PACKAGE = "h3_upstream_sync_tests"
@@ -21,7 +23,9 @@ except ImportError:
         folder_paths.folder_names_and_paths[name] = ([path], set())
 
     folder_paths.add_model_folder_path = add_model_folder_path
-    folder_paths.get_folder_paths = lambda name: folder_paths.folder_names_and_paths[name][0]
+    folder_paths.get_folder_paths = lambda name: folder_paths.folder_names_and_paths[
+        name
+    ][0]
     sys.modules["folder_paths"] = folder_paths
 
 if PACKAGE not in sys.modules:
@@ -119,6 +123,102 @@ def test_cached_model_is_rehomed_after_optional_offload():
     assert calls == ["cpu"]
 
 
+def test_exact_clean_video_api_targets_requested_latent_grid_and_normalizes_once(
+    monkeypatch,
+):
+    calls = []
+
+    class FakeModel:
+        def __call__(self, value, *, scale, target_size):
+            calls.append((value.clone(), scale, target_size))
+            return F.interpolate(
+                value, size=target_size, mode="trilinear", align_corners=False
+            )
+
+    monkeypatch.setattr(lbh, "load_model", lambda *_args, **_kwargs: FakeModel())
+    source = torch.randn(2, 24, 3, 4, 6)
+    source_before = source.clone()
+
+    output = lbh.upscale_clean_video_exact(
+        source,
+        model_name="m.safetensors",
+        target_h=7,
+        target_w=10,
+        device="cpu",
+        precision="fp32",
+    )
+
+    mean, std = lbh._make_norm_tensors(torch.device("cpu"), torch.float32)
+    expected_normalized = (source - mean) / std
+    expected = (
+        F.interpolate(
+            expected_normalized,
+            size=(3, 7, 10),
+            mode="trilinear",
+            align_corners=False,
+        )
+        * std
+        + mean
+    )
+    assert len(calls) == 1
+    assert torch.allclose(calls[0][0], expected_normalized)
+    assert calls[0][1] == (7 / 4 + 10 / 6) / 2
+    assert calls[0][2] == (3, 7, 10)
+    assert output.shape == (2, 24, 3, 7, 10)
+    assert output.dtype == source.dtype
+    assert output.device == source.device
+    assert torch.allclose(output, expected)
+    assert torch.equal(source, source_before)
+
+
+def test_exact_clean_video_api_rejects_bad_model_output(monkeypatch):
+    class BadModel:
+        def __call__(self, value, *, scale, target_size):
+            del scale, target_size
+            return value[:, :, :-1]
+
+    monkeypatch.setattr(lbh, "load_model", lambda *_args, **_kwargs: BadModel())
+    with pytest.raises(RuntimeError, match="returned shape"):
+        lbh.upscale_clean_video_exact(
+            torch.randn(1, 24, 3, 4, 4),
+            model_name="m.safetensors",
+            target_h=8,
+            target_w=8,
+            device="cpu",
+            precision="fp32",
+        )
+
+
+@pytest.mark.parametrize(
+    ("video", "target_h", "target_w", "error"),
+    [
+        ("not-a-tensor", 8, 8, TypeError),
+        (torch.randn(1, 24, 4, 4), 8, 8, ValueError),
+        (torch.randn(1, 23, 2, 4, 4), 8, 8, ValueError),
+        (torch.ones(1, 24, 2, 4, 4, dtype=torch.int32), 8, 8, TypeError),
+        (torch.randn(1, 24, 2, 4, 4), 8.5, 8, TypeError),
+        (torch.randn(1, 24, 2, 4, 4), 3, 8, ValueError),
+    ],
+)
+def test_exact_clean_video_api_validates_input_before_model_load(
+    monkeypatch, video, target_h, target_w, error
+):
+    monkeypatch.setattr(
+        lbh,
+        "load_model",
+        lambda *_args, **_kwargs: pytest.fail("invalid input reached model loading"),
+    )
+    with pytest.raises(error):
+        lbh.upscale_clean_video_exact(
+            video,
+            model_name="m.safetensors",
+            target_h=target_h,
+            target_w=target_w,
+            device="cpu",
+            precision="fp32",
+        )
+
+
 def test_integrated_refiner_offloads_only_selected_cached_model(monkeypatch):
     calls = []
 
@@ -140,7 +240,9 @@ def test_integrated_refiner_offloads_only_selected_cached_model(monkeypatch):
     )
     monkeypatch.setattr(refine, "_lbh_module", lambda: fake_lbh)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append(("cuda", "empty")))
+    monkeypatch.setattr(
+        torch.cuda, "empty_cache", lambda: calls.append(("cuda", "empty"))
+    )
 
     assert refine._offload_cached_lbh_model("selected.safetensors", "cuda", "bf16")
     assert calls == [("selected", "cpu"), ("cuda", "empty")]

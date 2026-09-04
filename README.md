@@ -26,11 +26,12 @@ This project upscales **MiniMax H3** 24-channel video latents with a trained neu
 
 ## Nodes
 
-Three nodes are registered under `video/MinimaxH3`:
+Four nodes are registered under `video/MinimaxH3`:
 
 - **Minimax H3 Latent Upscaler (2D)** — lightweight learned spatial upscale with temporal layers.
 - **Minimax H3 Latent Upscaler (3D)** — fully 3D learned upscale with scale, target-dimensions, and megapixel modes.
 - **MiniMax H3 Latent Upscaler + Refine (3D)** — complete MiniMax H3 two-stage path: learned video upscale, AV reconstruction, exact H3 conditioning/masks, fresh enlarged-grid noise, and the actual second sampling pass.
+- **MiniMax H3 Latent Upscaler Provider (3D) [Experimental]** — immutable, versioned side-input configuration for compatible sampler-internal handoffs.
 
 The standalone 2D/3D nodes remain ordinary `LATENT → LATENT` upscalers. The integrated refine node is for workflows that intentionally perform a second H3 pass.
 
@@ -62,6 +63,7 @@ Comfyui_Minimax_h3_latent_Upscaler/
 │   ├── __init__.py
 │   ├── minimax_h3_latent_upscaler_2d.py
 │   ├── minimax_h3_latent_upscaler_3d.py
+│   ├── minimax_h3_handoff_provider.py    # versioned exact-target side-input API
 │   ├── minimax_h3_refine_support.py       # H3 AV/mask/conditioning helpers
 │   └── minimax_h3_refine.py               # complete H3 learned-upscale + refinement
 ├── tests/
@@ -69,6 +71,7 @@ Comfyui_Minimax_h3_latent_Upscaler/
 │   ├── test_h3_refine_node.py
 │   ├── test_h3_refine_sequence.py
 │   ├── test_h3_refine_support.py
+│   ├── test_handoff_provider.py
 │   ├── test_native_comfyui_fixture.py
 │   └── test_upstream_sync.py
 ├── README.md
@@ -237,6 +240,22 @@ Because a full-noise start gives the clean learned latent zero weight for H3's C
 A full-denoise schedule beginning at `1.0` is rejected. Use a partial-denoise second-pass schedule.
 
 The exact optimal refinement schedule is workload-dependent. A short pass is the intended use; even a short 2× spatial refinement can still be expensive because doubling latent H and W produces roughly four times as many video tokens for every H3 transformer step. Benchmark the second pass on your hardware rather than treating the learned upscaler itself as the dominant cost.
+
+### Progressive handoff provider (experimental)
+
+Connect **MiniMax H3 Latent Upscaler Provider (3D) [Experimental]** to a compatible
+`H3_LATENT_UPSCALER` input, such as Flow-Aligned Regenerate's Target Input progressive handoff,
+and select that consumer's learned transfer mode. The provider applies exactly one learned 3D
+transform to the consumer's clean `B×24×T×H×W` video estimate at the geometry boundary. It accepts
+the consumer's already-resolved exact latent H/W, preserves batch/channels/time, and never receives
+audio or runs H3 sampling.
+
+The provider uses the same package-owned checkpoint cache and precision/device policy as the 3D
+node. `offload_after_upscale=False` remains the default; enable it only when reclaiming VRAM is worth
+the transfer cost on every physical chunk. The 46×46→56×56 D14 experiment is approximately 1.217×.
+The training distribution includes arbitrary 1–4× scales, so this is supported by the model's scale
+conditioning, but it is less represented than the dominant 2× training case. Treat quality as
+unvalidated until a matched decoded-media A/B is complete.
 
 ### Audio control
 

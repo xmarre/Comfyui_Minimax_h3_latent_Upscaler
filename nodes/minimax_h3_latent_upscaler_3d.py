@@ -7,6 +7,7 @@ Minimax H3 Latent Upscaler - ComfyUI inference node (pure 3D conv version)
 - FP32 / FP16 / BF16 inference, VRAM-optimized
 """
 import math
+from numbers import Integral
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -414,6 +415,110 @@ def load_model(name, device, precision):
           f"Precision: {precision} | Device: {device}")
     return model
 
+
+def upscale_clean_video_exact(
+    video,
+    *,
+    model_name,
+    target_h,
+    target_w,
+    device,
+    precision,
+    offload_after_upscale=False,
+    output_device=None,
+    clear_cuda_cache=False,
+    scale_embedding=None,
+):
+    """Learned spatial resize to an exact latent H/W while preserving B/C/T.
+
+    This is the public low-level boundary for callers that already resolved their
+    target geometry.  It owns the checkpoint normalization exactly once and does
+    not accept or produce an H3 audio stream.
+    """
+    if not isinstance(video, torch.Tensor):
+        raise TypeError("MiniMax H3 learned upscale input must be a torch.Tensor")
+    if video.ndim != 5 or video.shape[1] != 24:
+        raise ValueError(
+            "MiniMax H3 learned upscale input must be Bx24xTxHxW, "
+            f"got {tuple(video.shape)}"
+        )
+    if not video.is_floating_point():
+        raise TypeError("MiniMax H3 learned upscale input must use a floating-point dtype")
+    if min(video.shape) < 1:
+        raise ValueError("MiniMax H3 learned upscale input axes must be non-empty")
+    if (
+        isinstance(target_h, bool)
+        or isinstance(target_w, bool)
+        or not isinstance(target_h, Integral)
+        or not isinstance(target_w, Integral)
+    ):
+        raise TypeError("learned upscale target H/W must be integers")
+    target_h = int(target_h)
+    target_w = int(target_w)
+    source_h, source_w = map(int, video.shape[-2:])
+    if target_h < source_h or target_w < source_w:
+        raise ValueError("MiniMax H3 learned upscale target must not shrink either spatial axis")
+    if precision not in _PRECISION_DTYPES:
+        raise ValueError(f"Unsupported learned-upscaler precision: {precision!r}")
+    if not isinstance(model_name, str) or not model_name or model_name.startswith("("):
+        raise ValueError("Select a MiniMax H3 learned-upscaler checkpoint")
+    if device not in {"cuda", "cpu"}:
+        raise ValueError("learned-upscaler device must be cuda or cpu")
+
+    if target_h == source_h and target_w == source_w:
+        return video.clone()
+
+    requested_device = torch.device(device if (device == "cpu" or torch.cuda.is_available()) else "cpu")
+    compute_dtype = _PRECISION_DTYPES[precision]
+    result_device = video.device if output_device is None else torch.device(output_device)
+    original_dtype = video.dtype
+    temporal = int(video.shape[2])
+    effective_scale = (
+        ((target_h / source_h) + (target_w / source_w)) / 2.0
+        if scale_embedding is None
+        else float(scale_embedding)
+    )
+    if not math.isfinite(effective_scale) or effective_scale <= 0.0:
+        raise ValueError("learned-upscaler scale embedding must be finite and positive")
+
+    work = video.to(device=requested_device, dtype=compute_dtype, copy=True)
+    model = load_model(model_name, requested_device, precision)
+    norm_mean, norm_std = _make_norm_tensors(requested_device, compute_dtype)
+    with torch.inference_mode():
+        work.sub_(norm_mean).div_(norm_std)
+        output = model(
+            work,
+            scale=effective_scale,
+            target_size=(temporal, target_h, target_w),
+        )
+        del work
+        output.mul_(norm_std).add_(norm_mean)
+
+    expected_shape = (
+        int(video.shape[0]),
+        24,
+        temporal,
+        target_h,
+        target_w,
+    )
+    if tuple(output.shape) != expected_shape:
+        raise RuntimeError(
+            f"MiniMax H3 learned upscaler returned shape {tuple(output.shape)}; "
+            f"expected {expected_shape}"
+        )
+    if not output.is_floating_point():
+        raise TypeError("MiniMax H3 learned upscaler returned a non-floating tensor")
+    if not bool(torch.isfinite(output).all().item()):
+        raise RuntimeError("MiniMax H3 learned upscaler returned NaN or Inf values")
+
+    output = output.to(device=result_device, dtype=original_dtype)
+    if requested_device.type == "cuda":
+        if offload_after_upscale:
+            model.to("cpu")
+        if offload_after_upscale or clear_cuda_cache:
+            torch.cuda.empty_cache()
+    return output
+
 # ==========================================
 # ComfyUI node (new API)
 # ==========================================
@@ -509,15 +614,10 @@ class MinimaxH3LatentUpscaler3D(io.ComfyNode):
         was_4d = (src.dim() == 4)
 
         dev = torch.device(device if (device == "cpu" or torch.cuda.is_available()) else "cpu")
-        compute_dtype = _PRECISION_DTYPES[precision]
 
-        # VRAM opt: copy=True guarantees a private tensor (no .clone() needed,
-        # and in-place ops below can never mutate the user's latent).
-        s = src.to(device=dev, dtype=compute_dtype, copy=True)
-        if was_4d:
-            s = s.unsqueeze(2)  # (B, C, 1, H, W)
+        s = src.unsqueeze(2) if was_4d else src
 
-        b, c, t, h_in, w_in = s.shape
+        _batch, _channels, t, h_in, w_in = s.shape
         downsample = VAE_DOWNSAMPLE
 
         # 1. Theoretical target size in PIXEL space
@@ -566,27 +666,23 @@ class MinimaxH3LatentUpscaler3D(io.ComfyNode):
 
         # 4. Inference. Keep the full temporal sequence intact: GroupNorm and the
         #    stacked 3D/temporal convolutions make naive temporal chunking non-equivalent.
-        model = load_model(model_name, dev, precision)
-        norm_mean, norm_std = _make_norm_tensors(dev, compute_dtype)
-
-        with torch.inference_mode():
-            # In-place normalization is safe because s is a private copy and avoids
-            # another full-size latent allocation. It has the same arithmetic dtype.
-            s.sub_(norm_mean).div_(norm_std)
-            out = model(s, scale=effective_scale, target_size=(t, h_out, w_out))
-            del s
-            out.mul_(norm_std).add_(norm_mean)
+        out = upscale_clean_video_exact(
+            s,
+            model_name=model_name,
+            target_h=h_out,
+            target_w=w_out,
+            device=str(dev),
+            precision=precision,
+            offload_after_upscale=offload_after_upscale,
+            output_device="cpu",
+            clear_cuda_cache=True,
+            scale_embedding=effective_scale,
+        )
 
         if was_4d:
             out = out.squeeze(2)
 
-        # Single fused device+dtype transfer back to CPU, GPU tensor freed right after.
-        out = out.to(device="cpu", dtype=orig_dtype)
-
-        if dev.type == "cuda":
-            if offload_after_upscale:
-                model.to("cpu")
-            torch.cuda.empty_cache()
+        out = out.to(dtype=orig_dtype)
 
         return io.NodeOutput({"samples": out})
 
