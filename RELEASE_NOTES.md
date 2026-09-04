@@ -1,3 +1,37 @@
+# MiniMax H3 Latent Upscaler v0.2.0
+
+v0.2.0 adds a versioned sampler-internal learned handoff provider for coordinated MiniMax H3 progressive generation while preserving the existing standalone and integrated-refine workflows.
+
+## Learned handoff provider
+
+- Adds the immutable API-v1 `H3_LATENT_UPSCALER` provider for sampler-internal clean-video spatial transfer.
+- Adds an exact-target 3D helper for `B×24×T×H×W` video tensors.
+- Preserves package-owned checkpoint discovery, model caching, precision/device policy, and optional `offload_after_upscale` behavior.
+- Rejects invalid API versions, channel/temporal changes, spatial shrink, and unavailable configured devices rather than silently falling back.
+- The provider never accepts audio and never invokes H3 sampling.
+
+## Coordinated Flow-Aligned Regenerate validation
+
+Decoded-media validation was completed in the coordinated `MiniMax-H3-Flow-Aligned-Regenerate` progressive Target Input path.
+
+- Around a `1152×864` (~0.995 MP) target, replacing aggressive bicubic handoff transfer with `learned_3d` fixed the majority of the observed body/spatial handoff artifacts in the tested difficult prompt.
+- `source_scale=0.70` resolved to `800×608 → 1152×864` and was judged excellent.
+- `source_scale=0.65` resolved to `736×576 → 1152×864` and began losing reference likeness / tonal stability, so it is not promoted.
+- A final `source_scale=0.70` gate resolved to `832×640 → 1184×896` (~1.061 MP). The generated action differed, but decoded quality was again judged very good.
+- BF16 CUDA learned inference took about 0.60 s and 0.77 s for the two physical chunks in that final run and added zero H3 NFEs.
+
+These results validate the coordinated progressive boundary for the tested prompt. They are not a universal claim that learned transfer is better for every consumer, prompt, scale, or model configuration.
+
+## Compatibility
+
+Existing node behavior remains unchanged unless the new provider is explicitly wired into a consumer. `offload_after_upscale=False` remains the default. The learned handoff provider is additive and does not replace the existing standalone latent-upscale or integrated upscale+refine paths.
+
+## Validation
+
+The release keeps the native ComfyUI compatibility matrix, Ruff/format checks, `compileall`, native source-contract tests, refinement regressions, alignment tests, temporal execution tests, and cache/offload coverage. The provider integration is additionally covered by exact-target shape/channel/temporal/device contract tests.
+
+---
+
 # MiniMax H3 Latent Upscaler v0.1.1
 
 v0.1.1 is a backward-compatible maintenance release that consolidates the post-v0.1.0 upstream review, CI hardening, alignment fixes, learned-model offload controls, and the final sequence-aware H3 Continuum handoff fix.
