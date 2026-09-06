@@ -7,8 +7,8 @@ requires-python = ">=3.10"
 dependencies = ["einops"]
 
 [project.urls]
-Repository = "https://github.com/xmarre/Comfyui_Minimax_h3_latent_Upscaler"
-"Bug Tracker" = "https://github.com/xmarre/Comfyui_Minimax_h3_latent_Upscaler/issues"
+Repository = "https://github.com/xmarre/Comfyui_Minimax_h3_latent_Upscaler-Plus"
+"Bug Tracker" = "https://github.com/xmarre/Comfyui_Minimax_h3_latent_Upscaler-Plus/issues"
 
 [tool.comfy]
 PublisherId = "xmarre"

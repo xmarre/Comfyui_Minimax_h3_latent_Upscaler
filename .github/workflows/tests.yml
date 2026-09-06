@@ -28,11 +28,15 @@ jobs:
           - comfy_ref: 27bca654eb9a70237d93f56a6ea336ab55f8925d
             python_version: "3.13"
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Comfyui_Minimax_h3_latent_Upscaler
     steps:
       - name: Check out custom node
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+          path: Comfyui_Minimax_h3_latent_Upscaler
 
       - name: Check out reviewed ComfyUI source
         uses: actions/checkout@v4
@@ -47,6 +51,7 @@ jobs:
         with:
           python-version: ${{ matrix.python_version }}
           cache: pip
+          cache-dependency-path: Comfyui_Minimax_h3_latent_Upscaler/requirements.txt
 
       - name: Install test dependencies
         run: |
@@ -74,13 +79,13 @@ jobs:
       - name: Run native ComfyUI source-contract tests
         env:
           COMFYUI_PATH: ${{ github.workspace }}/ComfyUI
-          PYTHONPATH: ${{ github.workspace }}/ComfyUI:${{ github.workspace }}
+          PYTHONPATH: ${{ github.workspace }}/ComfyUI:${{ github.workspace }}:${{ github.workspace }}/Comfyui_Minimax_h3_latent_Upscaler
         run: python -m pytest -q tests/test_native_comfyui_fixture.py
 
       - name: Run refinement regression suite
         env:
           COMFYUI_PATH: ${{ github.workspace }}/ComfyUI
-          PYTHONPATH: ${{ github.workspace }}/ComfyUI:${{ github.workspace }}
+          PYTHONPATH: ${{ github.workspace }}/ComfyUI:${{ github.workspace }}:${{ github.workspace }}/Comfyui_Minimax_h3_latent_Upscaler
         run: |
           python -m pytest -q \
             --ignore=tests/test_native_comfyui_fixture.py \

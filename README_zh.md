@@ -5,7 +5,9 @@
 
 <div align="center">
 
-# ComfyUI Minimax H3 Latent Upscaler
+# ComfyUI Minimax H3 Latent Upscaler-Plus
+
+> **Plus 分支：** 这是 `xmarre` 维护的 [LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler) Plus 分支。它保留上游项目基础，同时维护可能有意与上游不同的功能、集成和修复。
 
 **MiniMax H3 视频生成的神经网络 Latent 放大器**  
 Learned · 高保真 · 2D / 3D
@@ -38,7 +40,7 @@ Learned · 高保真 · 2D / 3D
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler.git
+git clone https://github.com/xmarre/Comfyui_Minimax_h3_latent_Upscaler-Plus.git Comfyui_Minimax_h3_latent_Upscaler
 ```
 
 模型放到：
@@ -93,7 +95,7 @@ MiniMax H3 原生 fallback 路径通常只使用 positive conditioning。`negati
 
 需要配套的 H3 Continuum `refine_state` 支持：
 
-https://github.com/xmarre/ComfyUI-H3-Continuum/pull/15
+https://github.com/xmarre/ComfyUI-H3-Continuum-Plus/pull/15
 
 正确连接：
 
