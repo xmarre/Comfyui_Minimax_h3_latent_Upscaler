@@ -5,7 +5,9 @@
 
 <div align="center">
 
-# ComfyUI Minimax H3 Latent Upscaler
+# ComfyUI Minimax H3 Latent Upscaler-Plus
+
+> **Plus fork:** This is the `xmarre` maintained Plus fork of [LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler). It preserves the upstream project's foundation while carrying additional features, integrations, fixes, and behavior that may intentionally diverge from upstream.
 
 **Neural Latent Upscaler for Minimax H3 Video Generation**  
 Learned · High-fidelity · 2D & 3D Variants
@@ -108,7 +110,7 @@ Inference forces learned-upscaler attention off (`attn=False`) for speed/stabili
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/xmarre/Comfyui_Minimax_h3_latent_Upscaler.git
+git clone https://github.com/xmarre/Comfyui_Minimax_h3_latent_Upscaler-Plus.git Comfyui_Minimax_h3_latent_Upscaler
 ```
 
 A normal ComfyUI installation already provides the main runtime dependencies (`torch`, `einops`, `safetensors`). Restart ComfyUI after installing or updating the node.
@@ -173,7 +175,7 @@ On the integrated path, `offload_after_upscale=True` moves the cached learned 3D
 
 Use the companion H3 Continuum PR/release that exposes `refine_state`:
 
-https://github.com/xmarre/ComfyUI-H3-Continuum/pull/15
+https://github.com/xmarre/ComfyUI-H3-Continuum-Plus/pull/15
 
 Correct wiring:
 
