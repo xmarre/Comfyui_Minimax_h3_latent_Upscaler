@@ -1,3 +1,28 @@
+# MiniMax H3 Latent Upscaler v0.2.1
+
+v0.2.1 aligns the sampler-internal learned-upscaler provider defaults with the coordinated Flow-Aligned Regenerate progressive workflow.
+
+## Provider defaults
+
+**MiniMax H3 Latent Upscaler Provider (3D) [Experimental]** now defaults to:
+
+```text
+model_name            = minimax_h3_latent_upscaler_3d_bf16.safetensors  # when installed
+device                = cuda
+precision             = bf16
+offload_after_upscale = false
+```
+
+Checkpoint discovery remains authoritative. The preferred bf16 checkpoint is selected only when that exact file is present; the provider does not invent a missing model entry. Other installed checkpoints, CPU execution, and fp32/fp16 precision remain selectable.
+
+The immutable `H3LatentUpscalerProvider` direct-construction default also changes from fp16 to bf16 so direct consumers and the ComfyUI node do not silently diverge.
+
+## Compatibility
+
+The provider API version, exact-target clean-video contract, cache/offload behavior, and H3 NFE semantics are unchanged. This release changes defaults only; explicit existing workflow values continue to be honored.
+
+---
+
 # MiniMax H3 Latent Upscaler v0.2.0
 
 v0.2.0 adds a versioned sampler-internal learned handoff provider for coordinated MiniMax H3 progressive generation while preserving the existing standalone and integrated-refine workflows.

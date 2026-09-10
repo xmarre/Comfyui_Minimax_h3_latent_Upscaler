@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-minimax-h3-latent-upscaler"
-version = "0.2.0"
+version = "0.2.1"
 description = "Learned MiniMax H3 latent upscaling with integrated low-sigma refinement for ComfyUI."
 readme = "README.md"
 requires-python = ">=3.10"
