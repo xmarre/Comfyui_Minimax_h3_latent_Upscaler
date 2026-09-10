@@ -9,6 +9,7 @@ import torch
 
 H3_LATENT_UPSCALER_API_VERSION = 1
 H3_LATENT_UPSCALER_KIND = "minimax_h3_learned_latent_upscaler"
+PREFERRED_H3_LATENT_UPSCALER_MODEL = "minimax_h3_latent_upscaler_3d_bf16.safetensors"
 
 
 def _lbh_module():
@@ -23,7 +24,7 @@ class H3LatentUpscalerProvider:
 
     model_name: str
     device: str = "cuda"
-    precision: str = "fp16"
+    precision: str = "bf16"
     offload_after_upscale: bool = False
 
     api_version: ClassVar[int] = H3_LATENT_UPSCALER_API_VERSION
@@ -78,11 +79,17 @@ class MinimaxH3LatentUpscaler3DProvider:
     @classmethod
     def INPUT_TYPES(cls):
         lbh = _lbh_module()
+        models = lbh.scan_models()
+        model_spec = (
+            (models, {"default": PREFERRED_H3_LATENT_UPSCALER_MODEL})
+            if PREFERRED_H3_LATENT_UPSCALER_MODEL in models
+            else (models,)
+        )
         return {
             "required": {
-                "model_name": (lbh.scan_models(),),
+                "model_name": model_spec,
                 "device": (["cuda", "cpu"], {"default": "cuda"}),
-                "precision": (["fp32", "fp16", "bf16"], {"default": "fp16"}),
+                "precision": (["fp32", "fp16", "bf16"], {"default": "bf16"}),
                 "offload_after_upscale": (
                     "BOOLEAN",
                     {
